@@ -20,7 +20,7 @@ class QinglongBackup:
         self.backup_dir = '/tmp/backups'
         
         if not all([self.webdav_url, self.backup_path, self.username, self.password]):
-            print("错误: WebDAV配置不完整!")
+            print("ERROR: WebDAV config incomplete!")
             print(f"WEBDAV_URL: {bool(self.webdav_url)}")
             print(f"WEBDAV_BACKUP_PATH: {bool(self.backup_path)}")
             print(f"WEBDAV_USERNAME: {bool(self.username)}")
@@ -41,9 +41,10 @@ class QinglongBackup:
         try:
             if not self.client.check(self.backup_path):
                 self.client.mkdir(self.backup_path)
-                print(f"创建远程目录: {self.backup_path}")
+                print(f"Created remote directory: {self.backup_path}")
         except Exception as e:
-            print(f"检查/创建远程目录失败: {e}")
+            print(f"Failed to check/create remote directory: {e}")
+            print(f"Please ensure '{self.backup_path}' exists in your WebDAV storage")
     
     def create_backup(self):
         """创建备份并上传到WebDAV"""
@@ -52,26 +53,26 @@ class QinglongBackup:
             backup_filename = f"qinglong_backup_{timestamp}.tar.zst"
             backup_filepath = os.path.join(self.backup_dir, backup_filename)
             
-            print(f"[{datetime.now()}] 开始创建备份...")
+            print(f"[{datetime.now()}] Creating backup...")
             
             # 使用tar和zstd压缩数据目录
             cmd = f"tar -I zstd -cf {backup_filepath} -C {self.data_dir} ."
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             
             if result.returncode != 0:
-                print(f"备份创建失败: {result.stderr}")
+                print(f"Backup creation failed: {result.stderr}")
                 return False
             
             # 获取文件大小
             size_mb = os.path.getsize(backup_filepath) / (1024 * 1024)
-            print(f"备份文件已创建: {backup_filename} ({size_mb:.2f} MB)")
+            print(f"Backup file created: {backup_filename} ({size_mb:.2f} MB)")
             
             # 上传到WebDAV
             remote_path = f"{self.backup_path}/{backup_filename}"
-            print(f"正在上传到: {remote_path}")
+            print(f"Uploading to: {remote_path}")
             
             self.client.upload_sync(remote_path=remote_path, local_path=backup_filepath)
-            print(f"上传成功!")
+            print(f"Upload successful!")
             
             # 删除本地备份文件
             os.remove(backup_filepath)
@@ -82,7 +83,7 @@ class QinglongBackup:
             return True
             
         except Exception as e:
-            print(f"备份失败: {e}")
+            print(f"Backup failed: {e}")
             return False
     
     def cleanup_old_backups(self):
@@ -98,19 +99,28 @@ class QinglongBackup:
                 for old_backup in backup_files[self.max_backups:]:
                     remote_path = f"{self.backup_path}/{old_backup}"
                     self.client.clean(remote_path)
-                    print(f"已删除旧备份: {old_backup}")
+                    print(f"Deleted old backup: {old_backup}")
                     
         except Exception as e:
-            print(f"清理旧备份失败: {e}")
+            print(f"Failed to cleanup old backups: {e}")
     
     def restore_backup(self):
         """从WebDAV恢复最新备份"""
         try:
-            print(f"[{datetime.now()}] 检查是否需要恢复备份...")
+            print(f"[{datetime.now()}] Checking if restore needed...")
             
-            # 检查数据目录是否为空
-            if os.path.exists(self.data_dir) and os.listdir(self.data_dir):
-                print("数据目录不为空，跳过恢复")
+            # 检查是否存在关键文件来判断是否需要恢复
+            # 青龙的关键目录：config, scripts, db 等
+            key_paths = [
+                os.path.join(self.data_dir, 'config', 'auth.json'),
+                os.path.join(self.data_dir, 'db', 'database.sqlite'),
+                os.path.join(self.data_dir, 'config', 'config.sh')
+            ]
+            
+            has_data = any(os.path.exists(path) for path in key_paths)
+            
+            if has_data:
+                print("Existing data detected, skip restore")
                 return True
             
             # 获取最新备份
@@ -118,37 +128,37 @@ class QinglongBackup:
             backup_files = [f for f in files if f.startswith('qinglong_backup_') and f.endswith('.tar.zst')]
             
             if not backup_files:
-                print("未找到备份文件，跳过恢复")
+                print("No backup found, skip restore")
                 return True
             
             backup_files.sort(reverse=True)
             latest_backup = backup_files[0]
             
-            print(f"找到最新备份: {latest_backup}")
+            print(f"Found latest backup: {latest_backup}")
             
             # 下载备份文件
             remote_path = f"{self.backup_path}/{latest_backup}"
             local_path = os.path.join(self.backup_dir, latest_backup)
             
-            print("正在下载备份...")
+            print("Downloading backup...")
             self.client.download_sync(remote_path=remote_path, local_path=local_path)
             
             size_mb = os.path.getsize(local_path) / (1024 * 1024)
-            print(f"下载完成 ({size_mb:.2f} MB)")
+            print(f"Download completed ({size_mb:.2f} MB)")
             
             # 确保数据目录存在
             os.makedirs(self.data_dir, exist_ok=True)
             
             # 解压备份
-            print("正在恢复数据...")
+            print("Restoring data...")
             cmd = f"tar -I zstd -xf {local_path} -C {self.data_dir}"
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
             
             if result.returncode != 0:
-                print(f"恢复失败: {result.stderr}")
+                print(f"Restore failed: {result.stderr}")
                 return False
             
-            print("数据恢复成功!")
+            print("Data restored successfully!")
             
             # 删除临时文件
             os.remove(local_path)
@@ -156,12 +166,12 @@ class QinglongBackup:
             return True
             
         except Exception as e:
-            print(f"恢复备份失败: {e}")
+            print(f"Failed to restore backup: {e}")
             return False
     
     def run_backup_loop(self):
         """运行定期备份循环"""
-        print(f"启动备份服务，同步间隔: {self.sync_interval}秒")
+        print(f"Backup service started, interval: {self.sync_interval}s")
         
         # 立即执行一次备份
         self.create_backup()
