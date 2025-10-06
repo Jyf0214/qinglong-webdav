@@ -1,4 +1,3 @@
-# qinglong-webdav
 # 青龙面板 + WebDAV 自动备份镜像
 
 基于青龙面板的Docker镜像，支持自动备份数据到WebDAV存储，并在部署/重启时自动恢复。
@@ -135,7 +134,27 @@ docker build -t qinglong-webdav:latest .
 docker logs -f qinglong
 ```
 
-### 2. 如何手动触发备份？
+### 2. WebDAV URL 格式错误
+
+⚠️ **常见错误**：使用 `http://` 而不是 `https://`
+
+✅ **正确示例**：
+- Koofr: `https://app.koofr.net/dav`
+- TeraCloud: `https://jike.teracloud.jp/dav`
+
+### 3. Koofr 路径配置
+
+Koofr 的路径必须以 `Koofr` 开头：
+```yaml
+WEBDAV_BACKUP_PATH: Koofr/backup/qinglong  # ✅ 正确
+WEBDAV_BACKUP_PATH: backup/qinglong         # ❌ 错误
+```
+
+### 4. 首次启动检测到数据
+
+正常现象。镜像会检查关键文件（auth.json, database.sqlite）来判断是否需要恢复，而不是简单检查目录是否为空。
+
+### 5. 如何手动触发备份？
 
 进入容器执行：
 
@@ -143,25 +162,67 @@ docker logs -f qinglong
 docker exec -it qinglong python3 /app/backup/backup_restore.py
 ```
 
-### 3. 如何手动恢复备份？
+### 6. 如何手动恢复备份？
 
 ```bash
-docker exec -it qinglong python3 /app/backup/backup_restore.py restore
+# 清空数据（谨慎！）
+docker exec qinglong sh -c "rm -rf /ql/data/config /ql/data/db /ql/data/scripts"
+
+# 恢复
+docker exec qinglong python3 /app/backup/backup_restore.py restore
+
+# 重启
+docker restart qinglong
 ```
 
-### 4. WebDAV 连接失败怎么办？
-
-检查以下内容：
-- WebDAV URL 是否正确（需包含 https:// 或 http://）
-- 用户名和密码是否正确
-- 备份文件夹是否已在网盘中创建
-- 网络连接是否正常
-
-### 5. 备份占用空间太大怎么办？
+### 7. 备份占用空间太大怎么办？
 
 - 增加 `SYNC_INTERVAL` 减少备份频率
 - 减少 `MAX_BACKUPS` 保留更少的备份版本
 - 定期清理不需要的脚本和日志
+
+### 8. WebDAV 连接失败怎么办？
+
+检查以下内容：
+- WebDAV URL 是否正确（必须包含 `https://`）
+- 用户名和密码是否正确
+- 备份文件夹是否已在网盘中创建
+- 网络连接是否正常
+
+详细故障排查请查看 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
+
+## 🔧 高级配置
+
+### 使用 Docker Secrets 保护密码
+
+```yaml
+version: '3'
+
+services:
+  qinglong:
+    image: ghcr.io/your-username/qinglong-webdav:latest
+    secrets:
+      - webdav_password
+    environment:
+      - WEBDAV_PASSWORD_FILE=/run/secrets/webdav_password
+      # ... 其他配置
+
+secrets:
+  webdav_password:
+    file: ./webdav_password.txt
+```
+
+### 自定义压缩级别
+
+修改 `backup_restore.py` 中的压缩命令：
+
+```python
+# 高压缩率（慢，文件小）
+cmd = f"tar -I 'zstd -19' -cf {backup_filepath} -C {self.data_dir} ."
+
+# 快速压缩（快，文件大）
+cmd = f"tar -I 'zstd -1' -cf {backup_filepath} -C {self.data_dir} ."
+```
 
 ## 🌟 支持的 WebDAV 服务
 
