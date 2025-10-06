@@ -1,0 +1,23 @@
+version: '3'
+
+services:
+  qinglong:
+    image: ghcr.io/your-username/qinglong-webdav:latest
+    container_name: qinglong
+    restart: unless-stopped
+    ports:
+      - "5700:5700"
+    environment:
+      # WebDAV配置
+      - WEBDAV_URL=https://jike.teracloud.jp/dav
+      - WEBDAV_BACKUP_PATH=qinglong_backup  # 需要在网盘中预先创建此文件夹
+      - WEBDAV_USERNAME=your_username
+      - WEBDAV_PASSWORD=your_password
+      
+      # 备份配置
+      - SYNC_INTERVAL=600  # 备份间隔（秒），默认600秒（10分钟）
+      - MAX_BACKUPS=10     # 保留的备份数量
+      
+      # 青龙面板配置（可选）
+      - TZ=Asia/Shanghai
+    # 注意: 不使用volumes挂载，所有数据通过WebDAV备份
