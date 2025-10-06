@@ -2,17 +2,21 @@ version: '3'
 
 services:
   qinglong:
-    image: ghcr.io/your-username/qinglong-webdav:latest
+    image: ghcr.io/Jyf0214/qinglong-webdav:latest
     container_name: qinglong
     restart: unless-stopped
     ports:
       - "5700:5700"
     environment:
-      # WebDAV配置
-      - WEBDAV_URL=https://jike.teracloud.jp/dav
-      - WEBDAV_BACKUP_PATH=qinglong_backup  # 需要在网盘中预先创建此文件夹
+      # WebDAV配置 - Koofr示例
+      - WEBDAV_URL=https://app.koofr.net/dav  # 注意：使用 https:// 而不是 http://
+      - WEBDAV_BACKUP_PATH=Koofr/backup/qinglong  # 需要在网盘中预先创建此文件夹
       - WEBDAV_USERNAME=your_username
       - WEBDAV_PASSWORD=your_password
+      
+      # 或使用 TeraCloud
+      # - WEBDAV_URL=https://jike.teracloud.jp/dav
+      # - WEBDAV_BACKUP_PATH=qinglong_backup
       
       # 备份配置
       - SYNC_INTERVAL=600  # 备份间隔（秒），默认600秒（10分钟）
