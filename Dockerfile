@@ -22,5 +22,5 @@ ENV WEBDAV_USERNAME=""
 ENV WEBDAV_PASSWORD=""
 ENV MAX_BACKUPS=10
 
-# 使用自定义入口点
-ENTRYPOINT ["/app/backup/entrypoint.sh"]
+# 使用自定义入口点（不覆盖原有的 ENTRYPOINT）
+CMD ["/app/backup/entrypoint.sh"]
