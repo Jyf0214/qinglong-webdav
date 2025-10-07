@@ -1,4 +1,3 @@
-
 FROM whyour/qinglong:latest
 
 # 安装必要的依赖
@@ -26,15 +25,16 @@ ENV WEBDAV_USERNAME=""
 ENV WEBDAV_PASSWORD=""
 ENV MAX_BACKUPS=10
 
-# [最终修复] 解决所有权限问题
-# 增加了对 /var/log/nginx 的处理，并确保所有 Nginx 目录都预先创建
-RUN mkdir -p /var/lib/nginx/logs /var/lib/nginx/tmp /var/log/nginx && \
+# [最终修复] 解决所有权限问题，包括 Nginx 的 PID 文件目录
+# 确保所有 Nginx 需要的运行时目录都被创建并赋予正确的所有权
+RUN mkdir -p /var/lib/nginx/logs /var/lib/nginx/tmp /var/log/nginx /run/nginx && \
     chown -R 1000:1000 \
     /app/backup \
     /ql \
     /etc/nginx \
     /var/lib/nginx \
-    /var/log/nginx
+    /var/log/nginx \
+    /run/nginx
 
 # 您需要确保 /app/backup/entrypoint.sh 脚本最后会调用青龙的原始启动命令
 CMD ["/app/backup/entrypoint.sh"]
