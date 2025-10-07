@@ -1,39 +1,43 @@
-FROM whyour/qinglong:latest
+# 使用一个干净、标准的 Node.js 18 镜像作为基础
+# 它自带了 node 用户 (UID 1000)，完美契合 Hugging Face 环境
+FROM node:18-slim
 
-# 安装必要的依赖
-RUN apk add --no-cache python3 py3-pip zstd && \
-    pip3 install --no-cache-dir webdavclient3 schedule
+# 设置工作目录
+WORKDIR /ql
 
-# 为 pm2 指定一个可控的、非根目录的主目录
-ENV PM2_HOME /ql/.pm2
+# 1. 安装官方指南要求的所有系统依赖
+# pnpm 将通过 npm 安装，所以这里不需要
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    wget \
+    cron \
+    python3 \
+    python3-pip \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
 
-# 创建备份脚本目录
+# 2. 安装 pnpm (青龙面板的核心包管理器)
+RUN npm install -g pnpm
+
+# 3. 执行官方的安装脚本
+# 下载脚本并执行，这会 git clone 源代码并用 pnpm 安装所有依赖
+RUN wget -q https://raw.githubusercontent.com/whyour/qinglong/master/install.sh && \
+    bash install.sh
+
+# 4. 复制您的自定义备份/恢复脚本
 RUN mkdir -p /app/backup
-
-# 复制备份和恢复脚本
 COPY backup_restore.py /app/backup/
 COPY entrypoint.sh /app/backup/
-
-# 设置执行权限
 RUN chmod +x /app/backup/entrypoint.sh
 
-# 设置环境变量默认值
-ENV SYNC_INTERVAL=600
-ENV WEBDAV_URL=""
-ENV WEBDAV_BACKUP_PATH=""
-ENV WEBDAV_USERNAME=""
-ENV WEBDAV_PASSWORD=""
-ENV MAX_BACKUPS=10
+# 5. [核心] 赋予所有权
+# 将整个青龙安装目录和您的脚本目录的所有权赋予 node 用户 (1000)
+# 这确保了运行时的一切操作都有权限
+RUN chown -R 1000:1000 /ql /app
 
-# [终极修复] 根据您的提议，对所有应用可能触及的目录进行全面授权
-# 这可以彻底解决任何隐藏的、在启动后才触发的权限问题，从而解决 502 错误
-RUN mkdir -p /var/lib/nginx/tmp /var/log/nginx /run/nginx && \
-    chown -R 1000:1000 \
-    /app \
-    /ql \
-    /etc \
-    /var \
-    /run
+# 6. 切换到非 root 用户
+# 明确声明容器的运行时用户是 node (UID 1000)
+USER 1000
 
-# 您需要确保 /app/backup/entrypoint.sh 脚本最后会调用青龙的原始启动命令
+# 7. 设置最终的启动命令
 CMD ["/app/backup/entrypoint.sh"]
