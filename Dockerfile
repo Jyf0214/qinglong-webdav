@@ -17,11 +17,6 @@ COPY entrypoint.sh /app/backup/
 # 设置执行权限
 RUN chmod +x /app/backup/entrypoint.sh
 
-# [核心修复 502 错误] 强制修改青龙的默认配置文件
-# 确保应用监听在本地回环地址(127.0.0.1)，这样 Nginx 才能稳定地找到它
-# 这解决了 Nginx 和后端应用之间的通信问题 (502 Bad Gateway)
-RUN sed -i 's/IpAddress=0.0.0.0/IpAddress=127.0.0.1/g' /ql/sample/config.sample.sh
-
 # 设置环境变量默认值
 ENV SYNC_INTERVAL=600
 ENV WEBDAV_URL=""
@@ -30,15 +25,15 @@ ENV WEBDAV_USERNAME=""
 ENV WEBDAV_PASSWORD=""
 ENV MAX_BACKUPS=10
 
-# 解决所有权限问题
-RUN mkdir -p /var/lib/nginx/logs /var/lib/nginx/tmp /var/log/nginx /run/nginx && \
+# [终极修复] 根据您的提议，对所有应用可能触及的目录进行全面授权
+# 这可以彻底解决任何隐藏的、在启动后才触发的权限问题，从而解决 502 错误
+RUN mkdir -p /var/lib/nginx/tmp /var/log/nginx /run/nginx && \
     chown -R 1000:1000 \
-    /app/backup \
+    /app \
     /ql \
-    /etc/nginx \
-    /var/lib/nginx \
-    /var/log/nginx \
-    /run/nginx
+    /etc \
+    /var \
+    /run
 
 # 您需要确保 /app/backup/entrypoint.sh 脚本最后会调用青龙的原始启动命令
 CMD ["/app/backup/entrypoint.sh"]
