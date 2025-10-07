@@ -22,5 +22,10 @@ ENV WEBDAV_USERNAME=""
 ENV WEBDAV_PASSWORD=""
 ENV MAX_BACKUPS=10
 
+# [核心修复] 解决权限问题
+# 将脚本目录和青龙数据目录的所有权递归地赋予一个通用的非 root 用户 (UID 1000)
+# 这必须在所有文件复制和目录创建完成后执行
+RUN chown -R 1000:1000 /app/backup /ql/data
+
 # 使用自定义入口点（不覆盖原有的 ENTRYPOINT）
 CMD ["/app/backup/entrypoint.sh"]
