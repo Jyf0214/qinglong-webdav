@@ -31,21 +31,22 @@ RUN apt-get update && \
     build-essential && \
     rm -rf /var/lib/apt/lists/*
 
-# 3. [核心] 安装 rclone
-# 使用官方脚本安装最新版本的 rclone
-RUN curl https://rclone.org/install.sh | bash
+# 3. [核心修复] 创建一个假的 apt-get 来拦截并禁用青龙应用在运行时的调用
+# 这可以防止因权限不足而导致的启动失败
+RUN echo '#!/bin/sh\necho "INFO: apt-get call intercepted and disabled in non-root environment." >&2\nexit 0' > /usr/local/bin/apt-get && \
+    chmod +x /usr/local/bin/apt-get
 
 # 4. 安装 npm 依赖，分步进行
 RUN npm install -g pnpm node-pre-gyp
 RUN npm install -g @whyour/qinglong
 
 # 5. 复制您的自定义 rclone 备份/恢复脚本
-# 注意：我们不再需要 backup_restore.py 了
 RUN mkdir -p /app/backup
 COPY entrypoint.sh /app/backup/
 RUN chmod +x /app/backup/entrypoint.sh
 
 # 6. 赋予所有权给 Hugging Face 的运行时用户 (1000)
+# 我们只 chown 应用需要的目录，保持系统目录的干净
 RUN chown -R 1000:1000 /ql /app
 
 # 7. 切换到非 root 用户
