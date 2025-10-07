@@ -11,27 +11,40 @@ ENV QL_DATA_DIR=/ql/data
 # 设置工作目录
 WORKDIR /ql
 
-# 2. 安装所有系统依赖
-# 包括: ca-certificates, curl, gnupg 用于添加 NodeSource 仓库
-# nodejs: 我们需要的 Node.js 运行时
-# build-essential: 用于编译原生 npm 模块
-# git: 解决 "git error occurred" 的关键
-# python3, pip, cron: 青龙的其他依赖
+# 2. 安装所有系统依赖并正确设置 Node.js 18 仓库
 RUN apt-get update && \
+    # 安装添加外部仓库所需的基础工具
     apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
-    gnupg \
+    gnupg && \
+    \
+    # ---- 正确安装 Node.js 18 的标准流程 ----
+    # a. 创建 keyring 目录
+    mkdir -p /etc/apt/keyrings && \
+    # b. 下载 NodeSource GPG 密钥
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+    # c. 添加 NodeSource 的 apt 仓库
+    NODE_MAJOR=18 && \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list && \
+    # ----------------------------------------
+    \
+    # 再次更新 apt 缓存以包含新的 NodeSource 仓库
+    apt-get update && \
+    \
+    # 现在安装所有依赖，nodejs 将从 NodeSource 安装
+    apt-get install -y --no-install-recommends \
     nodejs \
     git \
     cron \
     python3 \
     python3-pip \
     build-essential && \
+    \
     # 清理 apt 缓存，减小镜像体积
     rm -rf /var/lib/apt/lists/*
 
-# 3. 执行您建议的 npm 安装流程
+# 3. 执行您建议的 npm 安装流程 (现在 npm 命令一定存在)
 RUN npm install -g pnpm node-pre-gyp @whyour/qinglong
 
 # 4. 创建数据目录
