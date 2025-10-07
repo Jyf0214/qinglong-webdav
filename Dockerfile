@@ -1,28 +1,28 @@
 # 使用一个干净、标准的 Node.js 18 镜像作为基础
-# 它自带了 node 用户 (UID 1000)，完美契合 Hugging Face 环境
 FROM node:18-slim
 
-# 设置工作目录为绝对路径 /ql
+# [核心] 根据您的建议，预先设置青龙需要的环境变量
+# QL_DIR 是主目录，QL_DATA_DIR 是所有数据（配置、脚本、日志）的存放位置
+ENV QL_DIR=/ql
+ENV QL_DATA_DIR=/ql/data
+
+# 设置工作目录
 WORKDIR /ql
 
-# 1. 安装官方指南要求的所有系统依赖
-# pnpm 将通过 npm 安装，所以这里不需要
+# 1. 安装系统依赖 (cron 和 python 依然需要)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    wget \
     cron \
     python3 \
     python3-pip \
-    unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 安装 pnpm (青龙面板的核心包管理器)
-RUN npm install -g pnpm
+# 2. [核心] 执行您建议的 npm 安装流程
+# 一次性安装所有必要的 npm 包
+RUN npm install -g pnpm node-pre-gyp @whyour/qinglong
 
-# 3. 执行官方的安装脚本
-# 下载脚本并执行，这会 git clone 源代码并用 pnpm 安装所有依赖到 /ql 目录
-RUN wget -q https://raw.githubusercontent.com/whyour/qinglong/master/install.sh && \
-    bash install.sh
+# 3. 创建数据目录
+# 确保数据目录存在，以便后续设置权限
+RUN mkdir -p /ql/data
 
 # 4. 复制您的自定义备份/恢复脚本
 RUN mkdir -p /app/backup
@@ -31,12 +31,10 @@ COPY entrypoint.sh /app/backup/
 RUN chmod +x /app/backup/entrypoint.sh
 
 # 5. [核心] 赋予所有权
-# 将整个青龙安装目录和您的脚本目录的所有权赋予 node 用户 (1000)
-# 这个 chown 命令范围精确，不会导致构建失败
+# 将整个青龙工作目录和您的脚本目录的所有权赋予 node 用户 (1000)
 RUN chown -R 1000:1000 /ql /app
 
 # 6. 切换到非 root 用户
-# 明确声明容器的运行时用户是 node (UID 1000)
 USER 1000
 
 # 7. 设置最终的启动命令
