@@ -13,26 +13,15 @@ WORKDIR /ql
 
 # 2. 安装所有系统依赖并正确设置 Node.js 18 仓库
 RUN apt-get update && \
-    # 安装添加外部仓库所需的基础工具
     apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     gnupg && \
-    \
-    # ---- 正确安装 Node.js 18 的标准流程 ----
-    # a. 创建 keyring 目录
     mkdir -p /etc/apt/keyrings && \
-    # b. 下载 NodeSource GPG 密钥
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
-    # c. 添加 NodeSource 的 apt 仓库
     NODE_MAJOR=18 && \
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list && \
-    # ----------------------------------------
-    \
-    # 再次更新 apt 缓存以包含新的 NodeSource 仓库
     apt-get update && \
-    \
-    # 现在安装所有依赖，nodejs 将从 NodeSource 安装
     apt-get install -y --no-install-recommends \
     nodejs \
     git \
@@ -40,12 +29,14 @@ RUN apt-get update && \
     python3 \
     python3-pip \
     build-essential && \
-    \
-    # 清理 apt 缓存，减小镜像体积
     rm -rf /var/lib/apt/lists/*
 
-# 3. 执行您建议的 npm 安装流程 (现在 npm 命令一定存在)
-RUN npm install -g pnpm node-pre-gyp @whyour/qinglong
+# 3. 执行您建议的 npm 安装流程，分步进行以确保依赖可用
+# [核心修复] 步骤 3a: 首先安装构建工具 pnpm 和 node-pre-gyp
+RUN npm install -g pnpm node-pre-gyp
+
+# [核心修复] 步骤 3b: 然后安装主应用 @whyour/qinglong
+RUN npm install -g @whyour/qinglong
 
 # 4. 创建数据目录
 RUN mkdir -p /ql/data
