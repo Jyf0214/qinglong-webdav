@@ -2,7 +2,7 @@
 # 它自带了 node 用户 (UID 1000)，完美契合 Hugging Face 环境
 FROM node:18-slim
 
-# 设置工作目录
+# 设置工作目录为绝对路径 /ql
 WORKDIR /ql
 
 # 1. 安装官方指南要求的所有系统依赖
@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN npm install -g pnpm
 
 # 3. 执行官方的安装脚本
-# 下载脚本并执行，这会 git clone 源代码并用 pnpm 安装所有依赖
+# 下载脚本并执行，这会 git clone 源代码并用 pnpm 安装所有依赖到 /ql 目录
 RUN wget -q https://raw.githubusercontent.com/whyour/qinglong/master/install.sh && \
     bash install.sh
 
@@ -32,7 +32,7 @@ RUN chmod +x /app/backup/entrypoint.sh
 
 # 5. [核心] 赋予所有权
 # 将整个青龙安装目录和您的脚本目录的所有权赋予 node 用户 (1000)
-# 这确保了运行时的一切操作都有权限
+# 这个 chown 命令范围精确，不会导致构建失败
 RUN chown -R 1000:1000 /ql /app
 
 # 6. 切换到非 root 用户
