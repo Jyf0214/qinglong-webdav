@@ -6,11 +6,11 @@ COPY --from=nodebuilder /usr/local/bin/node /usr/local/bin/
 COPY --from=nodebuilder /usr/local/lib/node_modules/. /usr/local/lib/node_modules/
 RUN set -x && \
   ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
-  apt-get update && \
-  apt-get install --no-install-recommends -y git libatomic1 && \
+  apt-get update && apt-get install --no-install-recommends -y git libatomic1 && \
   npm i -g pnpm@8.3.1 && \
   cd /tmp/build && \
-  pnpm install --prod
+  pnpm install --prod && \
+  apt-get clean && rm -rf /var/lib/apt/lists/*
 
 FROM python:3.11-slim-bullseye
 
@@ -32,12 +32,10 @@ ENV PNPM_HOME=/root/.local/share/pnpm \
 COPY --from=nodebuilder /usr/local/bin/node /usr/local/bin/
 COPY --from=nodebuilder /usr/local/lib/node_modules/. /usr/local/lib/node_modules/
 
-
 RUN set -x && \
   ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
   ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
-  apt-get update && \
-  apt-get upgrade -y && \
+  apt-get update && apt-get upgrade -y && \
   apt-get install --no-install-recommends -y git \
   curl \
   cron \
@@ -54,17 +52,14 @@ RUN set -x && \
   rclone \
   unzip \
   libatomic1 && \
-  apt-get clean && \
+  apt-get clean && rm -rf /var/lib/apt/lists/* && \
   ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
   echo "Asia/Shanghai" >/etc/timezone && \
   git config --global user.email "qinglong@@users.noreply.github.com" && \
   git config --global user.name "qinglong" && \
   git config --global http.postBuffer 524288000 && \
   npm install -g pnpm@8.3.1 pm2 ts-node && \
-  rm -rf /root/.pnpm-store && \
-  rm -rf /root/.local/share/pnpm/store && \
-  rm -rf /root/.cache && \
-  rm -rf /root/.npm && \
+  rm -rf /root/.pnpm-store /root/.local/share/pnpm/store /root/.cache /root/.npm && \
   chmod u+s /usr/sbin/cron && \
   ulimit -c 0
 
@@ -108,8 +103,7 @@ RUN useradd -m -u 1000 user
 # Switch to the "user" user
 USER user
 
-# 创建rclone配置文件
-RUN rclone config -h
+
 
 HEALTHCHECK --interval=5s --timeout=2s --retries=20 \
   CMD curl -sf --noproxy '*' http://127.0.0.1:5400/api/health || exit 1
