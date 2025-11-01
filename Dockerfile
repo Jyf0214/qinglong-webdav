@@ -102,6 +102,7 @@ RUN useradd -m -u 1000 user
 
 # Switch to the "user" user
 USER user
+RUN mkdir -p /home/user/.config/rclone
 
 
 
