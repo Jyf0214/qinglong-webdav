@@ -1,8 +1,21 @@
 #!/bin/bash
+set -eux
 
 dir_shell=/ql/shell
-. $dir_shell/share.sh
-. $dir_shell/env.sh
+
+if [ -f "$dir_shell/share.sh" ]; then
+  echo "Sourcing $dir_shell/share.sh"
+  source "$dir_shell/share.sh" || handle_error "Failed to source share.sh"
+else
+  handle_error "$dir_shell/share.sh not found"
+fi
+
+if [ -f "$dir_shell/env.sh" ]; then
+  echo "Sourcing $dir_shell/env.sh"
+  source "$dir_shell/env.sh" || handle_error "Failed to source env.sh"
+else
+  handle_error "$dir_shell/env.sh not found"
+fi
 
 log_info() {
   echo -e "======================$1========================\n"
