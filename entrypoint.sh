@@ -1,9 +1,7 @@
 #!/bin/bash
 
 # =================配置区域=================
-# 默认备份间隔：3600秒 (1小时)
-BACKUP_INTERVAL=${BACKUP_INTERVAL:-3600}
-# Rclone 远程路径 (例如: gdrive:/qinglong_backup)
+# Rclone 远程路径
 RCLONE_REMOTE_PATH=${RCLONE_REMOTE_PATH:-"drive:/ql_backup"}
 # 备份文件名
 BACKUP_FILENAME="ql_data_backup.tar.zst"
@@ -12,7 +10,6 @@ WORK_DIR="/ql"
 DATA_DIR="/ql/data"
 # =========================================
 
-# 颜色输出
 green(){ echo -e "\033[32m\033[01m$1\033[0m"; }
 yellow(){ echo -e "\033[33m\033[01m$1\033[0m"; }
 red(){ echo -e "\033[31m\033[01m$1\033[0m"; }
@@ -24,63 +21,78 @@ setup_rclone() {
         green "检测到 Rclone 配置，正在写入..."
         echo "$RCLONE_CONF_BASE64" | base64 -d > ~/.config/rclone/rclone.conf
     else
-        red "未检测到 RCLONE_CONF_BASE64 环境变量，无法进行备份和恢复！"
-        # 如果没有配置，我们依然允许程序运行，但数据会丢失
+        red "警告：未检测到 RCLONE_CONF_BASE64，将无法备份！"
     fi
 }
 
-# 2. 恢复数据 (Restore)
+# 2. 恢复数据
 restore_data() {
-    green "正在尝试从远程存储恢复数据..."
+    green "正在尝试恢复数据..."
     if rclone lsf "$RCLONE_REMOTE_PATH/$BACKUP_FILENAME" >/dev/null 2>&1; then
-        green "发现备份文件，开始下载..."
+        green "发现备份，正在下载并解压..."
         rclone copy "$RCLONE_REMOTE_PATH/$BACKUP_FILENAME" /tmp/
         
-        green "正在解压备份 (ZSTD Level 21)..."
-        # 使用 zstd 解压
-        # 确保目录存在
+        # 解压
         mkdir -p $DATA_DIR
         tar -I 'zstd -d' -xf /tmp/$BACKUP_FILENAME -C $WORK_DIR
-        
-        green "数据恢复完成！"
         rm -f /tmp/$BACKUP_FILENAME
+        green "恢复完成。"
     else
-        yellow "远程未找到备份文件，将作为全新实例启动。"
-        # 初始化必要的空目录结构
+        yellow "未找到备份，初始化新环境。"
+        # 必须手动建立这些目录，否则inotifywait监控不到会报错
         mkdir -p $DATA_DIR/config $DATA_DIR/log $DATA_DIR/db $DATA_DIR/scripts $DATA_DIR/repo
     fi
 }
 
-# 3. 启动青龙 (后台运行)
+# 3. 启动青龙
 start_qinglong() {
     green "启动青龙面板..."
-    # 以后台方式启动，并把日志输出到标准输出
     ./node_modules/.bin/qinglong &
     QL_PID=$!
 }
 
-# 4. 定时备份循环 (Backup Loop)
-start_backup_loop() {
-    yellow "启动定时备份服务，间隔: ${BACKUP_INTERVAL}秒"
+# 4. 监听变动并备份 (核心逻辑)
+start_monitor_backup() {
+    yellow "启动文件变动监控 (延迟10秒备份, Level 18)..."
+    
+    # 确保要监控的目录存在
+    mkdir -p $DATA_DIR/config $DATA_DIR/scripts $DATA_DIR/repo $DATA_DIR/db
+
     while true; do
-        sleep "$BACKUP_INTERVAL"
+        # 等待事件触发
+        # -r: 递归监控
+        # -e: 只监听 修改、创建、删除、移动
+        # --exclude: 极其重要！排除 log 目录和临时文件，防止死循环
+        # 监控目标: config, scripts, repo, db (不监控 log 和 deps)
+        inotifywait -r \
+            -e modify,create,delete,move \
+            --exclude '/ql/data/log' \
+            --exclude '.*\.swp' \
+            --exclude '.*\.tmp' \
+            $DATA_DIR/config $DATA_DIR/scripts $DATA_DIR/repo $DATA_DIR/db \
+            >/dev/null 2>&1
+
+        # 触发后，进入“防抖”阶段
+        yellow "[变动检测] 文件已变更，等待 10s 后备份..."
+        sleep 10
+
+        # 执行备份
+        green "[备份开始] 正在打包 (ZSTD-18)..."
         
-        green "[备份开始] 正在打包数据..."
-        # tar 打包 /ql/data 目录
-        # -I 'zstd -21 -T0' : 使用 zstd 21级压缩，-T0 表示使用所有CPU核心加速
-        # 注意：21级压缩非常耗内存，如果你的容器内存小于1G，可能会崩溃。
-        # 如果崩溃，请把 -21 改为 -19 或更低。
-        if tar -I 'zstd -21 -T0' -cf /tmp/$BACKUP_FILENAME -C $WORK_DIR data; then
-            green "[备份上传] 正在上传到 Rclone..."
+        # 这里的 -18 是压缩等级，-T0 是使用所有CPU核心
+        if tar -I 'zstd -18 -T0' -cf /tmp/$BACKUP_FILENAME -C $WORK_DIR data; then
+            green "[备份上传] 正在推送到云端..."
             if rclone copy "/tmp/$BACKUP_FILENAME" "$RCLONE_REMOTE_PATH"; then
-                green "[备份成功] $(date)"
+                green "[备份完成] $(date)"
             else
-                red "[备份失败] 上传失败！"
+                red "[备份失败] Rclone 上传出错"
             fi
             rm -f /tmp/$BACKUP_FILENAME
         else
-            red "[备份失败] 打包失败（可能是内存不足）"
+            red "[备份失败] 打包出错 (可能内存不足)"
         fi
+        
+        green "[监控恢复] 继续监听文件变动..."
     done
 }
 
@@ -89,12 +101,10 @@ setup_rclone
 restore_data
 start_qinglong
 
-# 启动备份循环（放在后台）
-start_backup_loop &
-BACKUP_PID=$!
+# 启动监控循环 (后台)
+start_monitor_backup &
+MONITOR_PID=$!
 
-# 捕获信号，优雅退出
-trap "kill $QL_PID; kill $BACKUP_PID; exit" SIGINT SIGTERM
+trap "kill $QL_PID; kill $MONITOR_PID; exit" SIGINT SIGTERM
 
-# 等待青龙进程结束（保持容器运行）
 wait $QL_PID
