@@ -1,98 +1,129 @@
 #!/bin/bash
 
-# =================配置区域=================
-# Rclone 远程路径
+# 开启调试模式，打印执行的每一行命令（排查完后可注释掉）
+# set -x
+
+# ================= 配置区域 =================
 RCLONE_REMOTE_PATH=${RCLONE_REMOTE_PATH:-"drive:/ql_backup"}
-# 备份文件名
 BACKUP_FILENAME="ql_data_backup.tar.zst"
-# 工作目录
 WORK_DIR="/ql"
 DATA_DIR="/ql/data"
-# =========================================
 
-green(){ echo -e "\033[32m\033[01m$1\033[0m"; }
-yellow(){ echo -e "\033[33m\033[01m$1\033[0m"; }
-red(){ echo -e "\033[31m\033[01m$1\033[0m"; }
+# 定义日志输出函数
+log() { echo -e "[$(date '+%H:%M:%S')] $1"; }
+err() { echo -e "\033[31m[ERROR] $1\033[0m"; }
+success() { echo -e "\033[32m[SUCCESS] $1\033[0m"; }
 
-# 1. 配置 Rclone
+# 0. 环境检查
+log "环境初始化检查..."
+log "当前用户 ID: $(id -u)"
+log "当前 Home 目录: $HOME"
+log "Rclone 目标路径: $RCLONE_REMOTE_PATH"
+
+# 1. 配置 Rclone & 测试连接
 setup_rclone() {
-    mkdir -p ~/.config/rclone
+    # 确保 config 目录存在
+    mkdir -p "$HOME/.config/rclone"
+    
     if [ -n "$RCLONE_CONF_BASE64" ]; then
-        green "检测到 Rclone 配置，正在写入..."
-        echo "$RCLONE_CONF_BASE64" | base64 -d > ~/.config/rclone/rclone.conf
+        log "正在写入 Rclone 配置文件..."
+        echo "$RCLONE_CONF_BASE64" | base64 -d > "$HOME/.config/rclone/rclone.conf"
+        
+        # 调试：检查配置文件是否存在
+        if [ -s "$HOME/.config/rclone/rclone.conf" ]; then
+            success "配置文件写入成功。"
+        else
+            err "配置文件写入失败或为空！"
+        fi
+
+        # 关键调试：测试 Rclone 是否能列出远程配置
+        log "正在测试 Rclone 连接 (listremotes)..."
+        if rclone listremotes; then
+            success "Rclone 连接测试通过！"
+        else
+            err "Rclone 连接失败！请检查 RCLONE_CONF_BASE64 是否正确。"
+            # 如果连接失败，不退出，但要在日志里看到
+        fi
     else
-        red "警告：未检测到 RCLONE_CONF_BASE64，将无法备份！"
+        err "未检测到 RCLONE_CONF_BASE64 环境变量！备份功能将不可用。"
     fi
 }
 
 # 2. 恢复数据
 restore_data() {
-    green "正在尝试恢复数据..."
+    log "检查远程是否存在备份文件: $BACKUP_FILENAME ..."
     if rclone lsf "$RCLONE_REMOTE_PATH/$BACKUP_FILENAME" >/dev/null 2>&1; then
-        green "发现备份，正在下载并解压..."
-        rclone copy "$RCLONE_REMOTE_PATH/$BACKUP_FILENAME" /tmp/
-        
-        # 解压
-        mkdir -p $DATA_DIR
-        tar -I 'zstd -d' -xf /tmp/$BACKUP_FILENAME -C $WORK_DIR
-        rm -f /tmp/$BACKUP_FILENAME
-        green "恢复完成。"
+        log "发现备份，开始下载..."
+        if rclone copy "$RCLONE_REMOTE_PATH/$BACKUP_FILENAME" /tmp/ -v; then
+            log "下载完成，正在解压 (ZSTD)..."
+            # 确保目录存在
+            mkdir -p $DATA_DIR
+            # 解压并覆盖
+            tar -I 'zstd -d' -xf /tmp/$BACKUP_FILENAME -C $WORK_DIR
+            rm -f /tmp/$BACKUP_FILENAME
+            success "数据恢复成功！"
+        else
+            err "下载备份文件失败！"
+        fi
     else
-        yellow "未找到备份，初始化新环境。"
-        # 必须手动建立这些目录，否则inotifywait监控不到会报错
+        log "远程未找到备份文件，初始化全新环境。"
+        # 必须手动创建目录，否则 inotifywait 会报错
         mkdir -p $DATA_DIR/config $DATA_DIR/log $DATA_DIR/db $DATA_DIR/scripts $DATA_DIR/repo
     fi
 }
 
 # 3. 启动青龙
 start_qinglong() {
-    green "启动青龙面板..."
+    log "正在启动青龙面板..."
+    # 移除后台运行的静默模式，直接让它输出日志
+    # 这里不需要 nohup，因为 Docker 会捕获 stdout
     ./node_modules/.bin/qinglong &
     QL_PID=$!
+    log "青龙 PID: $QL_PID"
 }
 
-# 4. 监听变动并备份 (核心逻辑)
+# 4. 监听变动并备份
 start_monitor_backup() {
-    yellow "启动文件变动监控 (延迟10秒备份, Level 18)..."
+    # 等待几秒确保目录都建立好了
+    sleep 5
     
-    # 确保要监控的目录存在
+    log "启动文件监控进程 (inotifywait)..."
+    
+    # 确保监控目录绝对存在
     mkdir -p $DATA_DIR/config $DATA_DIR/scripts $DATA_DIR/repo $DATA_DIR/db
 
     while true; do
-        # 等待事件触发
-        # -r: 递归监控
-        # -e: 只监听 修改、创建、删除、移动
-        # --exclude: 极其重要！排除 log 目录和临时文件，防止死循环
-        # 监控目标: config, scripts, repo, db (不监控 log 和 deps)
-        inotifywait -r \
+        log "正在监听文件变动..."
+        
+        # 去掉 >/dev/null 以便在日志中看到报错
+        # 如果这里报错，循环会疯狂打印日志，所以如果报错我们会 sleep 一下
+        if inotifywait -r \
             -e modify,create,delete,move \
             --exclude '/ql/data/log' \
             --exclude '.*\.swp' \
             --exclude '.*\.tmp' \
-            $DATA_DIR/config $DATA_DIR/scripts $DATA_DIR/repo $DATA_DIR/db \
-            >/dev/null 2>&1
-
-        # 触发后，进入“防抖”阶段
-        yellow "[变动检测] 文件已变更，等待 10s 后备份..."
-        sleep 10
-
-        # 执行备份
-        green "[备份开始] 正在打包 (ZSTD-18)..."
-        
-        # 这里的 -18 是压缩等级，-T0 是使用所有CPU核心
-        if tar -I 'zstd -18 -T0' -cf /tmp/$BACKUP_FILENAME -C $WORK_DIR data; then
-            green "[备份上传] 正在推送到云端..."
-            if rclone copy "/tmp/$BACKUP_FILENAME" "$RCLONE_REMOTE_PATH"; then
-                green "[备份完成] $(date)"
+            $DATA_DIR/config $DATA_DIR/scripts $DATA_DIR/repo $DATA_DIR/db; then
+            
+            log "检测到变动！等待 10s 防抖..."
+            sleep 10
+            
+            log "开始打包备份..."
+            if tar -I 'zstd -18 -T0' -cf /tmp/$BACKUP_FILENAME -C $WORK_DIR data; then
+                log "打包完成，正在上传..."
+                # 使用 -v 显示上传进度日志
+                if rclone copy "/tmp/$BACKUP_FILENAME" "$RCLONE_REMOTE_PATH" -v; then
+                    success "备份上传成功！"
+                else
+                    err "Rclone 上传失败！"
+                fi
+                rm -f /tmp/$BACKUP_FILENAME
             else
-                red "[备份失败] Rclone 上传出错"
+                err "打包失败（可能是内存不足或磁盘空间不足）"
             fi
-            rm -f /tmp/$BACKUP_FILENAME
         else
-            red "[备份失败] 打包出错 (可能内存不足)"
+            err "inotifywait 异常退出！可能监控目录不存在。休眠 30s 重试..."
+            sleep 30
         fi
-        
-        green "[监控恢复] 继续监听文件变动..."
     done
 }
 
@@ -101,10 +132,12 @@ setup_rclone
 restore_data
 start_qinglong
 
-# 启动监控循环 (后台)
+# 启动监控 (后台)
 start_monitor_backup &
 MONITOR_PID=$!
 
-trap "kill $QL_PID; kill $MONITOR_PID; exit" SIGINT SIGTERM
+# 捕获信号
+trap "log '接收到停止信号'; kill $QL_PID; kill $MONITOR_PID; exit" SIGINT SIGTERM
 
+# 等待青龙主进程
 wait $QL_PID
