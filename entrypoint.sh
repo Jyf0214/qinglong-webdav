@@ -1,39 +1,50 @@
 #!/bin/bash
 
-# ================= 配置 =================
+# ================= 配置区域 =================
 export RCLONE_REMOTE_PATH=${RCLONE_REMOTE_PATH:-"drive:/ql_backup"}
+PM2_CMD="./node_modules/.bin/pm2"
 
-# 辅助日志函数
-log() { echo -e "[$(date '+%H:%M:%S')] \033[36m[Entrypoint]\033[0m $1"; }
-err() { echo -e "[$(date '+%H:%M:%S')] \033[31m[ERROR]\033[0m $1"; }
+# 辅助日志
+log() { echo -e "[Entrypoint] $1"; }
 
-# 1. 配置 Rclone (Shell 处理 Base64 比较方便，继续保留在这里)
-log "正在配置 Rclone..."
+# 1. Rclone 配置 (同步执行)
+log "正在初始化配置..."
 mkdir -p "$HOME/.config/rclone"
 if [ -n "$RCLONE_CONF_BASE64" ]; then
     echo "$RCLONE_CONF_BASE64" | base64 -d > "$HOME/.config/rclone/rclone.conf"
-    log "Rclone 配置文件已写入"
+    log "Rclone 配置已写入"
 else
-    err "未检测到 RCLONE_CONF_BASE64，备份功能将不可用！"
+    echo "⚠️ 未找到 RCLONE_CONF_BASE64，将无法备份"
 fi
 
-# 2. 执行恢复 (同步执行，必须等恢复完再启动面板)
-log "启动 Python 恢复程序..."
+# 2. 数据恢复 (同步执行 - 必须在面板启动前完成)
+log "正在检查并恢复数据..."
 python3 /ql/backup.py restore
 
-# 3. 启动青龙面板 (后台执行)
+# 3. 启动青龙 (后台执行)
+# 注意：这里加 & 是为了不让它阻塞脚本，我们需要在它启动后插入我们的进程
 log "正在启动青龙面板..."
 ./node_modules/.bin/qinglong &
+QL_PID=$!
 
-# 4. 启动备份监控 (后台执行)
-# 等待几秒让青龙初始化完基础文件，避免冲突
-sleep 10
-log "启动 Python 监控程序..."
-python3 /ql/backup.py watch &
+# 4. 等待 PM2 服务就绪 (关键步骤)
+# 我们循环检查 pm2 是否活过来了
+log "等待 PM2 服务启动..."
+while ! $PM2_CMD ping > /dev/null 2>&1; do
+    sleep 1
+done
+log "PM2 服务已在线！"
 
-# 5. 守护进程 (输出日志)
-log "接管日志输出..."
-# 等待 PM2 启动
-sleep 5
-# 使用 pm2 logs 保持容器运行并查看日志
-./node_modules/.bin/pm2 logs --raw
+# 5. 【核心修改】将备份脚本注入 PM2
+# 这样备份脚本的日志就会出现在 pm2 logs 中，且拥有进程守护能力
+log "正在将备份监控挂载到 PM2..."
+$PM2_CMD start /ql/backup.py \
+    --name "backup-watchdog" \
+    --interpreter python3 \
+    --restart-delay 5000 \
+    -- watch
+
+# 6. 接管日志
+# --raw 保持原始颜色输出
+log "所有服务已启动，开始输出日志..."
+$PM2_CMD logs --raw
