@@ -7,7 +7,6 @@ ENV LANG=C.UTF-8 \
     HOME=/home/node
 
 # 1. 安装系统依赖
-# 必须包含 inotify-tools 供 python subprocess 调用
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
@@ -28,26 +27,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN ln -s /usr/bin/python3 /usr/bin/python
 
-# 2. 准备工作目录
+# 2. 准备目录
 WORKDIR /ql
-
-# 3. 复制脚本
 COPY entrypoint.sh /ql/entrypoint.sh
 COPY backup.py /ql/backup.py
 
-# 4. 设置权限
+# 3. 权限修正
 RUN chmod +x /ql/entrypoint.sh && \
     mkdir -p /ql/data && \
     mkdir -p /home/node/.config/rclone && \
     chown -R 1000:1000 /ql && \
     chown -R 1000:1000 /home/node
 
-# 5. 切换用户
+# 4. 切换用户
 USER 1000
 
-# 6. 安装青龙
+# 5. 安装青龙
 RUN npm install @whyour/qinglong --save --no-audit --no-fund
 
 EXPOSE 5700
 
-CMD ["/ql/entrypoint.sh"]
+# ================= 关键修改 =================
+# 使用 ENTRYPOINT 强制执行脚本
+# 这样即使平台试图运行 npm start，也会作为参数传给我们的脚本（或者直接被忽略）
+ENTRYPOINT ["/ql/entrypoint.sh"]
