@@ -3,10 +3,11 @@ FROM node:20-bullseye-slim
 ENV LANG=C.UTF-8 \
     TZ=Asia/Shanghai \
     QL_DIR=/ql \
-    QL_DATA_DIR=/ql/data
+    QL_DATA_DIR=/ql/data \
+    # 显式定义 HOME，确保 rclone 知道去哪里找配置文件
+    HOME=/home/node
 
 # 1. 安装系统依赖
-# 新增: inotify-tools (用于监控文件变动)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
@@ -21,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zstd \
     tar \
     inotify-tools \
+    procps \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -31,9 +33,12 @@ WORKDIR /ql
 COPY entrypoint.sh /ql/entrypoint.sh
 RUN chmod +x /ql/entrypoint.sh
 
-# 3. 预先创建必要的目录并修正权限
+# 3. 权限修正
+# 关键：确保 /ql 和 /home/node 都归属 1000
 RUN mkdir -p /ql/data && \
-    chown -R 1000:1000 /ql
+    mkdir -p /home/node/.config/rclone && \
+    chown -R 1000:1000 /ql && \
+    chown -R 1000:1000 /home/node
 
 # 4. 切换用户
 USER 1000
