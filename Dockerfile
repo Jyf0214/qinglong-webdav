@@ -6,7 +6,7 @@ ENV LANG=C.UTF-8 \
     QL_DATA_DIR=/ql/data \
     HOME=/home/node
 
-# 1. 安装系统依赖 (含 PM2 全局安装，方便调用 pm2-runtime)
+# 1. 安装系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
@@ -31,35 +31,32 @@ RUN ln -s /usr/bin/python3 /usr/bin/python
 # 2. 准备目录
 WORKDIR /ql
 
-# 3. 复制文件
-# 注意：这里不再需要 entrypoint.sh
-COPY backup.py /ql/backup.py
-COPY ecosystem.config.js /ql/ecosystem.config.js
+# 3. 复制唯一的脚本
+COPY starter.py /ql/starter.py
 
-# 4. 权限修正
-RUN mkdir -p /ql/data && \
-    mkdir -p /home/node/.config/rclone && \
-    chown -R 1000:1000 /ql && \
-    chown -R 1000:1000 /home/node
-
-# 5. 切换用户
-USER 1000
-
-# 6. 安装青龙
+# 4. 【特洛伊木马】将青龙安装到隐藏目录
+# 这样 /ql 目录下除了 starter.py 啥都没有
+# 平台检测不到 package.json，就不会运行 npm start
+WORKDIR /ql_hidden
 RUN npm install @whyour/qinglong --save --no-audit --no-fund
 
-# ================= 核心魔法 =================
-# 修改 package.json 的 start 命令
-# 1. 配置 Rclone (通过环境变量写入)
-# 2. 恢复数据 (backup.py restore)
-# 3. 启动 PM2 生态圈 (pm2-runtime start ecosystem.config.js)
-# 我们把这些逻辑串联成一行命令，写入 package.json
-RUN sed -i 's/"start": ".*"/"start": "mkdir -p ~\/.config\/rclone && echo $RCLONE_CONF_BASE64 | base64 -d > ~\/.config\/rclone\/rclone.conf && python3 \/ql\/backup.py restore && pm2-runtime start ecosystem.config.js"/g' package.json
+# 5. 权限和清理
+WORKDIR /ql
+RUN mkdir -p /ql/data && \
+    mkdir -p /home/node/.config/rclone && \
+    # 确保 /ql 下没有 package.json
+    rm -f /ql/package.json && \
+    chown -R 1000:1000 /ql && \
+    chown -R 1000:1000 /ql_hidden && \
+    chown -R 1000:1000 /home/node
+
+# 6. 切换用户
+USER 1000
 
 # 7. 端口
 EXPOSE 5700
 
 # 8. 启动命令
-# 既然我们修改了 package.json，这里直接用 npm start 即可
-# 这样最符合 PaaS 平台的规范
-CMD ["npm", "start"]
+# 直接运行我们的 Python 脚本
+# 因为没有 package.json，平台会尊重这个 CMD
+CMD ["python3", "/ql/starter.py"]
