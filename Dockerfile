@@ -1,116 +1,53 @@
-FROM node:20-slim as nodebuilder
+# 使用 Node.js LTS (Bullseye slim 版本体积较小且兼容性好)
+FROM node:20-bullseye-slim
 
-FROM python:3.11-slim-bullseye as builder
-COPY package.json .npmrc pnpm-lock.yaml /tmp/build/
-COPY --from=nodebuilder /usr/local/bin/node /usr/local/bin/
-COPY --from=nodebuilder /usr/local/lib/node_modules/. /usr/local/lib/node_modules/
-RUN set -x && \
-  ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
-  apt-get update && apt-get install --no-install-recommends -y git libatomic1 && \
-  npm i -g pnpm@8.3.1 && \
-  cd /tmp/build && \
-  pnpm install --prod && \
-  apt-get clean && rm -rf /var/lib/apt/lists/*
+# 设置环境变量
+ENV LANG=C.UTF-8 \
+    TZ=Asia/Shanghai \
+    QL_DIR=/ql \
+    QL_DATA_DIR=/ql/data
 
-FROM python:3.11-slim-bullseye
+# 1. [Root阶段] 安装系统级依赖
+# 青龙脚本和依赖通常需要 Python3, Git, Make, g++ 等
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-dev \
+    git \
+    make \
+    g++ \
+    gcc \
+    curl \
+    jq \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-ARG QL_MAINTAINER="whyour"
-LABEL maintainer="${QL_MAINTAINER}"
-ARG QL_URL=https://github.com/${QL_MAINTAINER}/qinglong.git
-ARG QL_BRANCH=debian
+# 为 python3 建立软链接 (有些脚本只认 python)
+RUN ln -s /usr/bin/python3 /usr/bin/python
 
+# 2. [Root阶段] 准备目录和权限
+# 创建工作目录
+WORKDIR /ql
 
-ENV PNPM_HOME=/root/.local/share/pnpm \
-  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/share/pnpm:/root/.local/share/pnpm/global/5/node_modules:$PNPM_HOME \
-  NODE_PATH=/usr/local/bin:/usr/local/pnpm-global/5/node_modules:/usr/local/lib/node_modules:/root/.local/share/pnpm/global/5/node_modules \
-  LANG=C.UTF-8 \
-  SHELL=/bin/bash \
-  PS1="\u@\h:\w \$ " \
-  QL_DIR=/ql \
-  QL_BRANCH=${QL_BRANCH}
+# 复制启动脚本到镜像中
+COPY entrypoint.sh /ql/entrypoint.sh
 
-COPY --from=nodebuilder /usr/local/bin/node /usr/local/bin/
-COPY --from=nodebuilder /usr/local/lib/node_modules/. /usr/local/lib/node_modules/
+# 赋予脚本执行权限
+RUN chmod +x /ql/entrypoint.sh
 
-RUN set -x && \
-  ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
-  ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
-  apt-get update && apt-get upgrade -y && \
-  apt-get install --no-install-recommends -y git \
-  curl \
-  cron \
-  wget \
-  tzdata \
-  perl \
-  openssl \
-  openssh-client \
-  nginx \
-  jq \
-  procps \
-  netcat \
-  sshpass \
-  rclone \
-  unzip \
-  libatomic1 && \
-  apt-get clean && rm -rf /var/lib/apt/lists/* && \
-  ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
-  echo "Asia/Shanghai" >/etc/timezone && \
-  git config --global user.email "qinglong@@users.noreply.github.com" && \
-  git config --global user.name "qinglong" && \
-  git config --global http.postBuffer 524288000 && \
-  npm install -g pnpm@8.3.1 pm2 ts-node && \
-  rm -rf /root/.pnpm-store /root/.local/share/pnpm/store /root/.cache /root/.npm && \
-  chmod u+s /usr/sbin/cron && \
-  ulimit -c 0
+# 关键步骤：更改目录所有权为 1000
+# 即使平台会自动使用 1000 用户运行，文件系统的权限也必须匹配
+RUN chown -R 1000:1000 /ql
 
-ARG SOURCE_COMMIT
-RUN git clone --depth=1 -b ${QL_BRANCH} ${QL_URL} ${QL_DIR} && \
-  cd ${QL_DIR} && \
-  cp -f .env.example .env && \
-  chmod 777 ${QL_DIR}/shell/*.sh && \
-  chmod 777 ${QL_DIR}/docker/*.sh && \
-  git clone --depth=1 -b ${QL_BRANCH} https://github.com/${QL_MAINTAINER}/qinglong-static.git /static && \
-  mkdir -p ${QL_DIR}/static && \
-  cp -rf /static/* ${QL_DIR}/static && \
-  rm -rf /static && \
-  rm -f ${QL_DIR}/docker/docker-entrypoint.sh
+# 3. [用户阶段] 切换到非 Root 用户
+USER 1000
 
-COPY docker-entrypoint.sh ${QL_DIR}/docker
+# 4. [用户阶段] 安装青龙面板
+# 直接在 /ql 目录下安装
+RUN npm install @whyour/qinglong --save --no-audit --no-fund
 
-RUN mkdir /ql/data && \
-  mkdir /ql/data/config && \
-  mkdir /ql/data/log && \
-  mkdir /ql/data/db && \
-  mkdir /ql/data/scripts && \
-  mkdir /ql/data/repo && \
-  mkdir /ql/data/raw && \
-  mkdir /ql/data/deps && \
-  chmod -R 777 /ql && \
-  chmod -R 777 /var && \
-  chmod -R 777 /usr/local && \
-  chmod -R 777 /etc/nginx && \
-  chmod -R 777 /run && \
-  chmod -R 777 /usr && \
-  chmod -R 777 /root 
-
-COPY --from=builder /tmp/build/node_modules/. /ql/node_modules/
-
-WORKDIR ${QL_DIR}
-
-# Set up a new user named "user" with user ID 1000
-RUN useradd -m -u 1000 user
-
-# Switch to the "user" user
-USER user
-RUN mkdir -p /home/user/.config/rclone
-
-
-
-HEALTHCHECK --interval=5s --timeout=2s --retries=20 \
-  CMD curl -sf --noproxy '*' http://127.0.0.1:5400/api/health || exit 1
-
-ENTRYPOINT ["./docker/docker-entrypoint.sh"]
-
-VOLUME /ql/data
-  
+# 5. [用户阶段] 暴露端口 (青龙默认通常是 5700)
 EXPOSE 5700
+
+# 6. 启动命令
+CMD ["/ql/entrypoint.sh"]
