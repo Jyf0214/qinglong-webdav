@@ -1,94 +1,68 @@
 #!/bin/bash
 
 # ================= 配置区域 =================
-# Rclone 远程路径 (默认值，可由环境变量覆盖)
 RCLONE_REMOTE_PATH=${RCLONE_REMOTE_PATH:-"drive:/ql_backup"}
-# 备份文件名
 BACKUP_FILENAME="ql_data_backup.tar.zst"
-# 目录定义
 WORK_DIR="/ql"
 DATA_DIR="/ql/data"
+# 定义 HOME 以防万一
+export HOME=/home/1000
 
-# 日志辅助函数
 log() { echo -e "[$(date '+%H:%M:%S')] \033[36m[INFO]\033[0m $1"; }
 err() { echo -e "[$(date '+%H:%M:%S')] \033[31m[ERROR]\033[0m $1"; }
 success() { echo -e "[$(date '+%H:%M:%S')] \033[32m[SUCCESS]\033[0m $1"; }
 
-# ================= 功能函数 =================
+# ================= 核心逻辑 =================
 
-# 1. 配置 Rclone
 setup_rclone() {
     log "正在配置 Rclone..."
+    # 确保目录存在
+    mkdir -p "$HOME/.config/rclone"
+    
     if [ -n "$RCLONE_CONF_BASE64" ]; then
-        # 解码并写入配置文件
         echo "$RCLONE_CONF_BASE64" | base64 -d > "$HOME/.config/rclone/rclone.conf"
         if [ -s "$HOME/.config/rclone/rclone.conf" ]; then
             success "Rclone 配置文件写入成功"
         else
-            err "Rclone 配置文件写入失败 (为空)"
+            err "Rclone 配置文件写入失败"
         fi
     else
-        err "未找到 RCLONE_CONF_BASE64 环境变量，无法备份/恢复！"
+        err "未找到 RCLONE_CONF_BASE64，跳过备份配置"
     fi
 }
 
-# 2. 恢复数据 (Restore)
 restore_data() {
-    log "正在检查远程备份: $RCLONE_REMOTE_PATH/$BACKUP_FILENAME"
-    
-    # 尝试列出文件来检查是否存在
+    log "正在检查远程备份..."
     if rclone lsf "$RCLONE_REMOTE_PATH/$BACKUP_FILENAME" >/dev/null 2>&1; then
-        log "发现备份文件，开始下载..."
+        log "发现备份，开始下载..."
         if rclone copy "$RCLONE_REMOTE_PATH/$BACKUP_FILENAME" /tmp/ -v; then
             log "下载完成，正在解压 (ZSTD)..."
-            
-            # 确保数据目录存在
+            # 确保目录存在
             mkdir -p $DATA_DIR
-            
-            # 解压：使用 zstd 解压
+            # 解压
             if tar -I 'zstd -d' -xf /tmp/$BACKUP_FILENAME -C $WORK_DIR; then
                 success "数据恢复成功！"
             else
-                err "解压失败！可能是文件损坏。"
+                err "解压失败，文件可能损坏"
             fi
-            
             rm -f /tmp/$BACKUP_FILENAME
         else
-            err "下载失败！"
+            err "下载失败"
         fi
     else
-        log "未发现远程备份，将初始化全新环境。"
-        # 手动创建必要的子目录，防止监控脚本报错
+        log "未发现远程备份，将作为全新实例启动。"
+        # 手动创建目录防止监控报错
         mkdir -p $DATA_DIR/config $DATA_DIR/scripts $DATA_DIR/repo $DATA_DIR/db $DATA_DIR/log
     fi
 }
 
-# 3. 启动青龙面板
-start_qinglong() {
-    log "正在启动青龙面板..."
-    # 启动 Node 进程，不使用 nohup，让日志直接输出到 Docker
-    ./node_modules/.bin/qinglong &
-    QL_PID=$!
-    success "青龙面板已启动 (PID: $QL_PID)"
-}
-
-# 4. 监听变动并备份 (Monitor Loop)
 start_monitor() {
-    # 等待一会，确保青龙完全初始化目录
-    sleep 5
-    
-    # 再次确保监控目录存在
+    sleep 10
+    log "启动文件监控 (inotifywait)..."
     mkdir -p $DATA_DIR/config $DATA_DIR/scripts $DATA_DIR/repo $DATA_DIR/db
 
-    log "启动文件监控 (inotifywait)..."
-    log "监控目录: config, scripts, repo, db"
-    log "排除目录: log (防止死循环)"
-
     while true; do
-        # 核心命令：阻塞等待文件变动
-        # -r: 递归
-        # -e: 关注修改、创建、删除、移动
-        # --exclude: 极其重要！必须排除日志和临时文件
+        # 排除 log, git, swp, tmp
         inotifywait -r \
             -e modify,create,delete,move \
             --exclude '/ql/data/log' \
@@ -98,42 +72,57 @@ start_monitor() {
             $DATA_DIR/config $DATA_DIR/scripts $DATA_DIR/repo $DATA_DIR/db \
             >/dev/null 2>&1
         
-        # 当 inotifywait 返回时，说明检测到了变动
-        log "⚠️ 检测到文件变更！等待 10s 缓冲..."
+        log "⚠️ 检测到变动，等待 10s 防抖..."
         sleep 10
         
-        log "⏳ 开始执行备份 (ZSTD Level 18)..."
-        
-        # 打包命令
-        # -I 'zstd -18 -T0': 高压缩比，多线程
+        log "⏳ 开始打包备份 (ZSTD-18)..."
+        # 这里的 -T0 表示使用所有 CPU 核心
         if tar -I 'zstd -18 -T0' -cf /tmp/$BACKUP_FILENAME -C $WORK_DIR data; then
-            log "☁️ 正在上传到 OneDrive/Rclone..."
+            log "☁️ 正在上传..."
             if rclone copy "/tmp/$BACKUP_FILENAME" "$RCLONE_REMOTE_PATH" -v; then
-                success "✅ 备份上传成功！[$(date)]"
+                success "✅ 备份完成！[$(date)]"
             else
-                err "❌ 上传失败！"
+                err "❌ 上传失败"
             fi
             rm -f /tmp/$BACKUP_FILENAME
         else
-            err "❌ 打包失败 (可能内存不足)"
+            err "❌ 打包失败"
         fi
         
-        log "🔄 继续监听文件变动..."
+        log "🔄 继续监听..."
     done
 }
 
-# ================= 主流程执行 =================
+# ================= 主流程 =================
 
 setup_rclone
 restore_data
-start_qinglong
 
-# 在后台启动监控循环
+# 启动监控 (后台)
 start_monitor &
 MONITOR_PID=$!
 
-# 捕获 Docker 停止信号，优雅退出
-trap "log '正在停止容器...'; kill $QL_PID; kill $MONITOR_PID; exit" SIGINT SIGTERM
+log "🚀 准备启动青龙面板..."
 
-# 阻塞主进程，等待青龙退出
+# 启动命令逻辑
+# 我们尝试查找并执行青龙的启动命令
+if command -v qinglong >/dev/null 2>&1; then
+    log "使用 'qinglong' 命令启动..."
+    qinglong &
+    QL_PID=$!
+elif [ -f "/ql/docker/docker-entrypoint.sh" ]; then
+    log "使用 '/ql/docker/docker-entrypoint.sh' 启动..."
+    /ql/docker/docker-entrypoint.sh &
+    QL_PID=$!
+else
+    log "未找到标准启动命令，尝试直接运行 public.js..."
+    # 这是一个保底措施，适用于大部分新版青龙
+    node /ql/build/public.js &
+    QL_PID=$!
+fi
+
+# 信号捕获
+trap "log 'Stopping...'; kill $QL_PID; kill $MONITOR_PID; exit" SIGINT SIGTERM
+
+# 等待青龙退出
 wait $QL_PID
