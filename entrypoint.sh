@@ -1,110 +1,117 @@
 #!/bin/bash
 
 # ================= 配置区域 =================
+# Rclone 远程路径
 RCLONE_REMOTE_PATH=${RCLONE_REMOTE_PATH:-"drive:/ql_backup"}
+# 备份文件名
 BACKUP_FILENAME="ql_data_backup.tar.zst"
+# 目录定义
 WORK_DIR="/ql"
 DATA_DIR="/ql/data"
 
-# 定义日志输出
-log() { echo -e "[$(date '+%H:%M:%S')] $1"; }
-err() { echo -e "\033[31m[ERROR] $1\033[0m"; }
-success() { echo -e "\033[32m[SUCCESS] $1\033[0m"; }
+# ================= 日志函数 =================
+# 将日志直接打印到 PID 1 的标准输出，确保 Docker logs 能看到
+log() { echo -e "[$(date '+%H:%M:%S')] \033[36m[Backup-System]\033[0m $1" > /proc/1/fd/1; }
+err() { echo -e "[$(date '+%H:%M:%S')] \033[31m[ERROR]\033[0m $1" > /proc/1/fd/1; }
+
+# ================= 核心逻辑 =================
 
 # 1. 配置 Rclone
 setup_rclone() {
     mkdir -p "$HOME/.config/rclone"
     if [ -n "$RCLONE_CONF_BASE64" ]; then
         echo "$RCLONE_CONF_BASE64" | base64 -d > "$HOME/.config/rclone/rclone.conf"
-        if rclone listremotes >/dev/null 2>&1; then
-            success "Rclone 配置成功"
-        else
-            err "Rclone 配置无效，无法备份！"
-        fi
+        log "Rclone 配置已注入"
     else
-        err "未设置 RCLONE_CONF_BASE64，跳过备份配置"
+        err "警告: 未找到 RCLONE_CONF_BASE64，无法备份！"
     fi
 }
 
 # 2. 恢复数据
 restore_data() {
+    log "检查云端备份文件..."
     if rclone lsf "$RCLONE_REMOTE_PATH/$BACKUP_FILENAME" >/dev/null 2>&1; then
-        log "检测到云端备份，正在恢复..."
+        log "发现备份，正在下载..."
         rclone copy "$RCLONE_REMOTE_PATH/$BACKUP_FILENAME" /tmp/
-        # 确保目录存在
+        log "正在解压 (ZSTD)..."
         mkdir -p $DATA_DIR
-        # 解压
         tar -I 'zstd -d' -xf /tmp/$BACKUP_FILENAME -C $WORK_DIR
         rm -f /tmp/$BACKUP_FILENAME
-        success "恢复完成！"
+        log "恢复完成！"
     else
-        log "无云端备份，初始化新环境"
+        log "云端无备份，初始化全新环境"
         mkdir -p $DATA_DIR/config $DATA_DIR/log $DATA_DIR/db $DATA_DIR/scripts $DATA_DIR/repo
     fi
 }
 
-# 3. 监控与备份逻辑 (将在后台运行)
-monitor_task() {
-    # 延迟 20秒启动，避开青龙启动时的高负载和频繁文件写入
-    sleep 20
+# 3. 监控与备份主进程 (后台运行)
+run_monitor_backup() {
+    # 等待 15秒，让青龙先完成初始化和目录创建
+    sleep 15
     
-    log "[Backup] 备份服务已就绪 (Inotify 监控中)..."
+    log "监控进程启动 (inotifywait)..."
     
+    # 确保目录存在，否则 inotifywait 会直接退出
+    mkdir -p $DATA_DIR/config $DATA_DIR/scripts $DATA_DIR/repo $DATA_DIR/db
+
     while true; do
-        # 监控变动，排除日志和临时文件
-        # 如果 inotifywait 报错（例如目录还没建好），这里会失败，所以加个 || true 防止退出
-        inotifywait -r \
-            -e modify,create,delete,move \
+        # 监听变动
+        # 注意：这里去掉了 -m (monitor) 改用默认阻塞模式，变化一次后退出 wait，执行备份，再循环
+        # 排除 log 目录防止死循环
+        if inotifywait -r -e modify,create,delete,move \
             --exclude '/ql/data/log' \
             --exclude '/ql/data/deps' \
-            --exclude '/ql/data/sys' \
             --exclude '.*\.swp' \
             --exclude '.*\.tmp' \
-            $DATA_DIR/config $DATA_DIR/scripts $DATA_DIR/repo $DATA_DIR/db >/dev/null 2>&1
-
-        # 触发变动后
-        log "[Backup] 检测到文件变动，等待 10s 防抖..."
-        sleep 10
-        
-        log "[Backup] 开始打包上传 (Level 18)..."
-        # 使用 zstd -18 压缩，-T0 多线程
-        tar -I 'zstd -18 -T0' -cf /tmp/$BACKUP_FILENAME -C $WORK_DIR data
-        
-        if [ $? -eq 0 ]; then
-             # 上传，使用 --quiet 减少前台日志干扰，除非出错
-            if rclone copy "/tmp/$BACKUP_FILENAME" "$RCLONE_REMOTE_PATH"; then
-                success "[Backup] 备份成功 $(date '+%H:%M:%S')"
+            $DATA_DIR/config $DATA_DIR/scripts $DATA_DIR/repo $DATA_DIR/db >/dev/null 2>&1; then
+            
+            log "检测到文件变动！等待 10秒防抖..."
+            sleep 10
+            
+            log "开始打包数据 (ZSTD-18)..."
+            # 为了防止打包失败导致数据丢失，先打包到临时文件
+            if tar -I 'zstd -18 -T0' -cf /tmp/$BACKUP_FILENAME -C $WORK_DIR data >/dev/null 2>&1; then
+                log "打包完成，正在上传到 OneDrive..."
+                if rclone copy "/tmp/$BACKUP_FILENAME" "$RCLONE_REMOTE_PATH"; then
+                    log "🎉 备份上传成功！"
+                else
+                    err "上传失败，请检查网络或 Rclone 配置"
+                fi
+                rm -f /tmp/$BACKUP_FILENAME
             else
-                err "[Backup] 上传失败！"
+                err "打包失败 (可能是内存不足)"
             fi
-            rm -f /tmp/$BACKUP_FILENAME
         else
-            err "[Backup] 打包失败！"
+            # 如果 inotifywait 报错(比如目录被删了)，休眠一下重建目录
+            err "监控异常 (目录可能不存在)，30秒后重试..."
+            sleep 30
+            mkdir -p $DATA_DIR/config $DATA_DIR/scripts $DATA_DIR/repo $DATA_DIR/db
         fi
-        
-        # 恢复监听前稍微停顿
-        sleep 2
     done
 }
 
 # ================= 主执行流程 =================
 
-# 1. 准备环境
+echo "--- 初始化环境 ---"
 setup_rclone
 restore_data
 
-# 2. 启动备份进程 (放入后台 &)
-# 这一步非常关键：让备份逻辑在后台默默运行，不占用主线程
-monitor_task &
+echo "--- 启动备份监控 (后台) ---"
+# 重点：在这里加 & 放到后台，这样它就不会被青龙阻塞
+run_monitor_backup &
 BACKUP_PID=$!
-log "备份服务后台 PID: $BACKUP_PID"
 
-# 3. 启动青龙 (作为前台主进程)
-log "正在启动青龙面板..."
+echo "--- 启动青龙面板 ---"
+# 启动青龙 (它会启动 PM2)
+./node_modules/.bin/qinglong
 
-# 捕捉 Docker 停止信号，为了优雅退出后台的备份循环
-trap "kill $BACKUP_PID; exit" SIGINT SIGTERM
+echo "--- 容器守护中 ---"
+# 青龙启动完 PM2 后可能会结束当前命令
+# 我们需要一个命令来阻塞住容器，不让它退出，同时输出日志
+# 我们监控 PM2 的日志，这样既能保活，又能看到青龙的报错
 
-# 使用 exec 启动青龙，这样青龙就会替代当前 shell 成为 PID 1
-# 这会让青龙的日志直接输出到 Docker Logs，并且青龙如果挂了，容器也会重启
-exec ./node_modules/.bin/qinglong
+# 等待 PM2 准备好
+sleep 5
+
+# 最终命令：显示 PM2 日志
+./node_modules/.bin/pm2 logs --raw
